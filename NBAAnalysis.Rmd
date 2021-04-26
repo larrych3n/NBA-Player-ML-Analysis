@@ -1,0 +1,224 @@
+---
+title: "NBA Player Analytics"
+author: "Siyuan (Larry) Chen"
+output: html_document
+---
+
+# Packages
+
+```{r}
+library(tidyverse)
+library(broom)
+library(rstan)
+library(shinystan)
+library(rstanarm)
+library(loo)
+```
+
+# Reading in my dataset
+
+```{r}
+nba <- read.csv("all_seasons.csv")
+```
+
+# Basic filtering of dataset
+
+```{r}
+recent <- c("2015-16", "2016-17", "2017-18", "2018-19", "2019-20")
+nba <- nba %>% 
+  filter(
+    season %in% recent
+  )
+
+nba %>% 
+  filter(
+    gp < 48
+  ) %>% 
+  count()
+
+nba %>% 
+  count(draft_year) %>% 
+  filter(
+    draft_year == "Undrafted"
+  )
+
+nba <- nba %>% 
+  filter(
+    gp > 55
+  ) %>% 
+  filter(
+    draft_year != "Undrafted"
+  )
+
+nba %>% 
+  filter(
+    country != "USA"
+  ) %>% 
+  count()
+
+nba <- nba %>% 
+  mutate(
+    country = ifelse(country == "USA", "USA", "International")
+  ) %>% 
+  mutate(
+    draft_number = as.numeric(draft_number)
+  )
+```
+
+# Tables 1 and 2
+
+```{r}
+nba %>% 
+  filter(player_name == "Stephen Curry") %>% 
+  mutate(Name = player_name) %>% 
+  select(Name, net_rating, season)
+
+nba %>% 
+  filter(player_name == "Giannis Antetokounmpo") %>% 
+  mutate(Name = player_name) %>% 
+  select(Name, net_rating, season)
+```
+
+# Basic EDA on player net rating
+
+```{r}
+nba %>% 
+  arrange(desc(net_rating)) %>% 
+  select(player_name, net_rating, season, gp)
+```
+# EDA for Numeric Variables
+
+Scatterplots of relationship between net rating and numeric variables, only one scatterplot was chosen for the research paper.
+
+```{r}
+ggplot(nba, aes(x = age, y = net_rating)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus Player Age", x = "Player Age", y = "Net Rating") +
+  theme_bw()
+  
+ggplot(nba, aes(x = ts_pct, y = net_rating)) +
+  geom_point() +
+  facet_grid(. ~ country) +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus True Shooting", x = "True Shooting", y = "Net Rating", fill = "Nationality") +
+  theme_bw()
+
+ggplot(nba, aes(x = ast_pct, y = net_rating)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus Assist Percentage", x = "Assist Percentage", y = "Net Rating") +
+  theme_bw()
+
+ggplot(nba, aes(x = draft_number, y = net_rating)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus Draft Number", x = "Draft Number", y = "Net Rating") +
+  theme_bw()
+
+ggplot(nba, aes(x = player_height, y = net_rating)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus Player Height", x = "Player Height", y = "Net Rating") +
+  theme_bw()
+
+ggplot(nba, aes(x = player_weight, y = net_rating)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Net Rating versus Player Weight", x = "Player Weight", y = "Net Rating") +
+  theme_bw()
+```
+
+# EDA for Categorical Variables
+
+```{r}
+ggplot(nba, aes(x = country, y = net_rating)) +
+  geom_boxplot()
+
+ggplot(nba, aes(x = draft_round, y = net_rating)) +
+  geom_boxplot()
+```
+
+# Initial frequentist linear model
+
+```{r}
+lm(net_rating ~ . -X -player_name -team_abbreviation -college -season -draft_year, nba)
+```
+
+```{r}
+tidy_lm <- lm(net_rating ~ . -X -player_name -team_abbreviation -college -season -draft_year, nba)
+tidy(tidy_lm)
+```
+# Backwards Elimination on initial frequentist model
+
+```{r}
+final_be <- augment(step(tidy_lm))
+```
+
+# Begin Bayesian MCMC Analysis
+
+We mean center Age, Player_Height, Player_Weight, GP.
+
+```{r}
+nba_model <- nba %>% 
+  mutate(age_cent = age - mean(age)) %>% 
+  mutate(player_height_cent = player_height - mean(player_height)) %>% 
+  mutate(player_weight_cent = player_weight - mean(player_weight)) %>% 
+  mutate(gp_cent = gp - mean(gp)) %>% 
+  select(-age, -player_height, -player_weight, -gp)
+
+model_ready <- nba %>% 
+  select(-X, -player_name, -team_abbreviation, -college, -season, -draft_year)
+
+full_model <- stan_glm(net_rating ~ . ,
+         family = gaussian(), data = model_ready, prior = cauchy(0, 2.5),
+         seed = 360)
+test_model <- stan_glm(net_rating ~ . -ast_pct,
+         family = gaussian(), data = model_ready, prior = cauchy(0, 2.5),
+         seed = 360)
+loo_compare(loo(full_model), loo(test_model))
+
+test <- summary(full_model)
+```
+Test_model had 15 iterations, with each one removing a different predictor variable from the model. 
+
+# Final MCMC Generalized Linear Model
+
+```{r}
+model_fin <- model_ready %>% 
+  mutate(age_cent = age - mean(age)) %>% 
+  mutate(player_height_cent = player_height - mean(player_height)) %>% 
+  mutate(player_weight_cent = player_weight - mean(player_weight)) %>% 
+  mutate(gp_cent = gp - mean(gp)) %>% 
+  select(-age, -player_height, -player_weight, -gp)
+
+final_model <- stan_glm(net_rating ~ . -pts -reb -usg_pct,
+         family = gaussian(), data = model_fin, prior = cauchy(0, 2.5),
+         seed = 360)
+coef(final_model)
+summary(final_model)
+```
+
+# Model Diagnostics
+
+```{r}
+pp_check(final_model, plotfun = "hist", nreps = 5)
+pp_check(final_model, plotfun = "stat", stat = "mean")
+pp_check(final_model, plotfun = "stat_2d", stat = c("mean", "sd"))
+```
+
+# Correlation graph for additional results
+
+```{r}
+library(GGally)
+model_corr <- model_fin %>% 
+  select(-draft_number)
+ggcorr(model_corr,
+    method = c("pairwise", "spearman"),
+    nbreaks = 6,
+    hjust = 0.9,
+    label = TRUE,
+    label_size = 2,
+    color = "grey50")
+```
+
